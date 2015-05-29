@@ -11,17 +11,18 @@ import tornado.tcpserver
 
 
 __all__ = ('TorpedoFramingMixin', 'TorpedoServer', 'TorpedoClient')
-__version__ = '0.1'
+__version__ = '0.2'
 
 
 class TorpedoFramingMixin(object):
     PACKET_FORMAT = '!L'
     PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
+    PACKET_SIZE_LIMIT = 2 ** 20 * 2
 
     def _setup(self):
         self._connect_callback = None
         self._disconnect_callback = None
-        self._message_callback = None        
+        self._message_callback = None
 
     def _connect_handler(self, address, stream):
         self._connect_callback and self._connect_callback(address)
@@ -46,7 +47,10 @@ class TorpedoFramingMixin(object):
 
     def _pack_msg(self, msg):
         body = self._encode_msg(msg)
-        return self._pack_size(len(body)) + body
+        size = len(body)
+        if size > self.PACKET_SIZE_LIMIT:
+            raise ValueError('PACKET_SIZE_LIMIT reached')
+        return self._pack_size(size) + body
 
     def _batch_send_msg(self, streams, msg):
         """
@@ -75,8 +79,11 @@ class TorpedoFramingMixin(object):
         Read data length and data
         """
         if stream and not stream.closed():
-            size = yield stream.read_bytes(self.PACKET_SIZE)
-            body = yield stream.read_bytes(self._unpack_size(size))
+            packed_size = yield stream.read_bytes(self.PACKET_SIZE)
+            size = self._unpack_size(packed_size)
+            if size > self.PACKET_SIZE_LIMIT:
+                raise ValueError('PACKET_SIZE_LIMIT reached')
+            body = yield stream.read_bytes(size)
             raise tornado.gen.Return(self._decode_body(body))
 
     @tornado.gen.coroutine
@@ -91,7 +98,7 @@ class TorpedoFramingMixin(object):
             try:
                 msg = yield self._read_msg(stream)
             except tornado.iostream.StreamClosedError:
-                break 
+                break
             else:
                 self.io_loop.add_callback(self._message_handler, address,
                                           stream, msg)
@@ -138,6 +145,12 @@ class TorpedoServer(tornado.tcpserver.TCPServer, TorpedoFramingMixin):
 
     def publish(self, msg):
         return self._batch_send_msg(self._clients.values(), msg)
+
+    def close(self):
+        self.stop()
+        for stream in self._clients.values():
+            if not stream.closed():
+                stream.close()
 
 
 class TorpedoClient(tornado.tcpclient.TCPClient, TorpedoFramingMixin):
