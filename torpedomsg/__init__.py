@@ -4,6 +4,7 @@ except ImportError:
     import json
 
 import functools
+import logging
 import struct
 import tornado.gen
 import tornado.tcpclient
@@ -11,7 +12,7 @@ import tornado.tcpserver
 
 
 __all__ = ('TorpedoFramingMixin', 'TorpedoServer', 'TorpedoClient')
-__version__ = '0.2'
+__version__ = '0.3'
 
 
 class TorpedoFramingMixin(object):
@@ -60,7 +61,7 @@ class TorpedoFramingMixin(object):
         if streams:
             packed_msg = self._pack_msg(msg)
             for stream in streams:
-                if stream and not stream.closed():
+                if stream is not None:
                     stream.write(packed_msg)
                     count += 1
         return count
@@ -70,7 +71,7 @@ class TorpedoFramingMixin(object):
         """
         Send data length and data
         """
-        if stream and not stream.closed():
+        if stream is not None:
             yield stream.write(self._pack_msg(msg))
 
     @tornado.gen.coroutine
@@ -78,7 +79,7 @@ class TorpedoFramingMixin(object):
         """
         Read data length and data
         """
-        if stream and not stream.closed():
+        if stream is not None:
             packed_size = yield stream.read_bytes(self.PACKET_SIZE)
             size = self._unpack_size(packed_size)
             if size > self.PACKET_SIZE_LIMIT:
@@ -98,6 +99,10 @@ class TorpedoFramingMixin(object):
             try:
                 msg = yield self._read_msg(stream)
             except tornado.iostream.StreamClosedError:
+                break
+            except ValueError:
+                logging.exception('Invalid data received. Closing connection')
+                stream.close()
                 break
             else:
                 self.io_loop.add_callback(self._message_handler, address,
@@ -149,8 +154,7 @@ class TorpedoServer(tornado.tcpserver.TCPServer, TorpedoFramingMixin):
     def close(self):
         self.stop()
         for stream in self._clients.values():
-            if not stream.closed():
-                stream.close()
+            stream.close()
 
 
 class TorpedoClient(tornado.tcpclient.TCPClient, TorpedoFramingMixin):
@@ -178,5 +182,5 @@ class TorpedoClient(tornado.tcpclient.TCPClient, TorpedoFramingMixin):
 
     def close(self):
         self._closed = True
-        if self._stream and not self._stream.closed():
+        if self._stream is not None:
             self._stream.close()
