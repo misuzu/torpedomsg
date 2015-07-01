@@ -12,13 +12,13 @@ import tornado.tcpserver
 
 
 __all__ = ('TorpedoFramingMixin', 'TorpedoServer', 'TorpedoClient')
-__version__ = '0.3'
+__version__ = '0.5'
 
 
 class TorpedoFramingMixin(object):
     PACKET_FORMAT = '!L'
     PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
-    PACKET_SIZE_LIMIT = 2 ** 20 * 2
+    PACKET_SIZE_LIMIT = 2 ** 24
 
     def _setup(self):
         self._connect_callback = None
@@ -61,18 +61,17 @@ class TorpedoFramingMixin(object):
         if streams:
             packed_msg = self._pack_msg(msg)
             for stream in streams:
-                if stream is not None:
+                if stream is not None and not stream.closed():
                     stream.write(packed_msg)
                     count += 1
         return count
 
-    @tornado.gen.coroutine
     def _send_msg(self, stream, msg):
         """
         Send data length and data
         """
-        if stream is not None:
-            yield stream.write(self._pack_msg(msg))
+        if stream is not None and not stream.closed():
+            return stream.write(self._pack_msg(msg))
 
     @tornado.gen.coroutine
     def _read_msg(self, stream):
@@ -92,6 +91,7 @@ class TorpedoFramingMixin(object):
         """
         Read loop
         """
+        stream.set_nodelay(True)
         stream.set_close_callback(functools.partial(self._disconnect_handler,
                                                     address, stream))
         self.io_loop.add_callback(self._connect_handler, address, stream)
@@ -167,12 +167,22 @@ class TorpedoClient(tornado.tcpclient.TCPClient, TorpedoFramingMixin):
         super(TorpedoClient, self).__init__(*args, **kwargs)
         self.io_loop.add_callback(self._connect)
 
+    def check_socket_valid(self, socket):
+        """
+        http://sgros.blogspot.com/2013/08/tcp-client-self-connect.html
+        """
+        return socket.getpeername() != socket.getsockname()
+
     @tornado.gen.coroutine
     def _connect(self):
         try:
             self._stream = yield self.connect(*self._address)
-            yield self._handle_stream(self._address, self._stream)
+            if self.check_socket_valid(self._stream.socket):
+                yield self._handle_stream(self._address, self._stream)
         except:
+            pass
+        if self._stream is not None:
+            self._stream.close()
             self._stream = None
         if not self._closed:
             self.io_loop.call_later(self._reconnect_interval, self._connect)
