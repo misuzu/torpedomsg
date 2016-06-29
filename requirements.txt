@@ -1,2 +1,2 @@
-tornado==4.1
-ujson==1.33
+cbor<2
+tornado<5

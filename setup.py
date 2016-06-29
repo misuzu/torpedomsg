@@ -35,6 +35,7 @@ setup(
     license='MIT',
     packages=['torpedomsg'],
     install_requires=[
+        'cbor<2',
         'tornado<5'
     ],
     classifiers=[
@@ -48,6 +49,7 @@ setup(
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
         'Topic :: Software Development :: Libraries :: Python Modules',
     ]
 )

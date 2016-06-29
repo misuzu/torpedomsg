@@ -1,8 +1,4 @@
-try:
-    import ujson as json
-except ImportError:
-    import json
-
+import cbor
 import functools
 import logging
 import struct
@@ -12,7 +8,7 @@ import tornado.tcpserver
 
 
 __all__ = ('TorpedoFramingMixin', 'TorpedoServer', 'TorpedoClient')
-__version__ = '0.5'
+__version__ = '0.6'
 
 
 class TorpedoFramingMixin(object):
@@ -35,10 +31,10 @@ class TorpedoFramingMixin(object):
         self._message_callback and self._message_callback(address, msg)
 
     def _encode_msg(self, msg):
-        return json.dumps(msg, ensure_ascii=False).encode('utf-8')
+        return cbor.dumps(msg)
 
     def _decode_body(self, body):
-        return json.loads(body.decode('utf-8'))
+        return cbor.loads(body)
 
     def _pack_size(self, size):
         return struct.pack(self.PACKET_FORMAT, size)
@@ -104,9 +100,11 @@ class TorpedoFramingMixin(object):
                 logging.exception('Invalid data received. Closing connection')
                 stream.close()
                 break
-            else:
-                self.io_loop.add_callback(self._message_handler, address,
-                                          stream, msg)
+            try:
+                self._message_handler(address, stream, msg)
+            except Exception:
+                logging.exception('error in message_handler')
+                break
 
     def set_connect_callback(self, callback):
         """
@@ -177,11 +175,12 @@ class TorpedoClient(tornado.tcpclient.TCPClient, TorpedoFramingMixin):
     def _connect(self):
         try:
             self._stream = yield self.connect(*self._address)
-            if self.check_socket_valid(self._stream.socket):
-                yield self._handle_stream(self._address, self._stream)
-        except:
+        except Exception:
+            # ignore connection issues
             pass
         if self._stream is not None:
+            if self.check_socket_valid(self._stream.socket):
+                yield self._handle_stream(self._address, self._stream)
             self._stream.close()
             self._stream = None
         if not self._closed:
