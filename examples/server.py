@@ -27,23 +27,23 @@ class LinePublisher(object):
         logging.info('received %r from %r', msg, address)
         cmd = msg.get('cmd')
         if cmd == 'snapshot':
+            data = list(range(1000))
             result = {
                 'cmd': cmd,
-                'data': list(range(1000)),
+                'data': data,
             }
-        elif cmd == 'ping':
-            result = {'cmd': 'pong'}
-        else:
-            result = {'error': cmd}
-        self.server.send(address, result)
+            logging.info('%s: %s', cmd, len(data))
+            self.server.send(address, result)
 
     def publish(self):
+        data = list(range(random.randrange(300)))
         msg = {
             'cmd': 'updates',
-            'data': list(range(random.randrange(300))),
+            'data': data,
         }
+        data and logging.info('updates: %s', len(data))
         self.server.publish(msg)
-        self.server.io_loop.call_later(random.randrange(100, 500) / 1000.0,
+        self.server.io_loop.call_later(random.randrange(200, 800) / 1000.0,
                                        self.publish)
 
 if __name__ == '__main__':

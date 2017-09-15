@@ -25,14 +25,8 @@ class LineReader(object):
     def message_callback(self, address, msg):
         cmd = msg.get('cmd')
         data = msg.get('data')
-        data and logging.info('updates: %s', len(data))
-        if cmd in ('updates', 'snapshot', 'pong'):
-            return
-        elif cmd == 'ping':
-            result = {'cmd': 'pong'}
-        else:
-            result = {'error': cmd}
-        self.client.send(result)
+        if cmd == 'updates' or cmd == 'snapshot':
+            logging.info('%s: %s', cmd, len(data))
 
 
 if __name__ == '__main__':

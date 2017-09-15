@@ -8,7 +8,7 @@ import tornado.tcpserver
 
 
 __all__ = ('TorpedoFramingMixin', 'TorpedoServer', 'TorpedoClient')
-__version__ = '0.6'
+__version__ = '0.7'
 
 
 class TorpedoFramingMixin(object):
@@ -22,13 +22,22 @@ class TorpedoFramingMixin(object):
         self._message_callback = None
 
     def _connect_handler(self, address, stream):
-        self._connect_callback and self._connect_callback(address)
+        try:
+            self._connect_callback and self._connect_callback(address)
+        except Exception:
+            logging.exception('error in connect_handler')
 
     def _disconnect_handler(self, address, stream):
-        self._disconnect_callback and self._disconnect_callback(address)
+        try:
+            self._disconnect_callback and self._disconnect_callback(address)
+        except Exception:
+            logging.exception('error in disconnect_handler')
 
     def _message_handler(self, address, stream, msg):
-        self._message_callback and self._message_callback(address, msg)
+        try:
+            self._message_callback and self._message_callback(address, msg)
+        except Exception:
+            logging.exception('error in message_handler')
 
     def _encode_msg(self, msg):
         return cbor.dumps(msg)
@@ -58,7 +67,7 @@ class TorpedoFramingMixin(object):
             packed_msg = self._pack_msg(msg)
             for stream in streams:
                 if stream is not None and not stream.closed():
-                    stream.write(packed_msg)
+                    stream.write(packed_msg, lambda: None)
                     count += 1
         return count
 
@@ -67,7 +76,7 @@ class TorpedoFramingMixin(object):
         Send data length and data
         """
         if stream is not None and not stream.closed():
-            return stream.write(self._pack_msg(msg))
+            stream.write(self._pack_msg(msg), lambda: None)
 
     @tornado.gen.coroutine
     def _read_msg(self, stream):
@@ -80,7 +89,20 @@ class TorpedoFramingMixin(object):
             if size > self.PACKET_SIZE_LIMIT:
                 raise ValueError('PACKET_SIZE_LIMIT reached')
             body = yield stream.read_bytes(size)
-            raise tornado.gen.Return(self._decode_body(body))
+            return self._decode_body(body)
+
+    @tornado.gen.coroutine
+    def _magic_check(self, stream):
+        magic = ('%s-%s' % (__name__, __version__)).encode('utf-8')
+        try:
+            stream.write(magic, lambda: None)
+            remote_magic = (yield stream.read_bytes(len(magic)))
+            if remote_magic == magic:
+                return True
+            logging.warning('magic mismatch %r != %r', remote_magic, magic)
+        except tornado.iostream.StreamClosedError:
+            pass
+        return False
 
     @tornado.gen.coroutine
     def _handle_stream(self, address, stream):
@@ -88,9 +110,12 @@ class TorpedoFramingMixin(object):
         Read loop
         """
         stream.set_nodelay(True)
+        if not (yield self._magic_check(stream)):
+            stream.close()
+            return
         stream.set_close_callback(functools.partial(self._disconnect_handler,
                                                     address, stream))
-        self.io_loop.add_callback(self._connect_handler, address, stream)
+        self._connect_handler(address, stream)
         while not stream.closed():
             try:
                 msg = yield self._read_msg(stream)
@@ -100,11 +125,7 @@ class TorpedoFramingMixin(object):
                 logging.exception('Invalid data received. Closing connection')
                 stream.close()
                 break
-            try:
-                self._message_handler(address, stream, msg)
-            except Exception:
-                logging.exception('error in message_handler')
-                break
+            self._message_handler(address, stream, msg)
 
     def set_connect_callback(self, callback):
         """
@@ -141,10 +162,10 @@ class TorpedoServer(tornado.tcpserver.TCPServer, TorpedoFramingMixin):
         super(TorpedoServer, self)._disconnect_handler(address, stream)
 
     def handle_stream(self, stream, address):
-        self.io_loop.add_callback(self._handle_stream, address, stream)
+        return self._handle_stream(address, stream)
 
     def send(self, address, msg):
-        return self._send_msg(self._clients.get(address), msg)
+        self._send_msg(self._clients.get(address), msg)
 
     def publish(self, msg):
         return self._batch_send_msg(self._clients.values(), msg)
@@ -165,7 +186,7 @@ class TorpedoClient(tornado.tcpclient.TCPClient, TorpedoFramingMixin):
         super(TorpedoClient, self).__init__(*args, **kwargs)
         self.io_loop.add_callback(self._connect)
 
-    def check_socket_valid(self, socket):
+    def _check_socket_valid(self, socket):
         """
         http://sgros.blogspot.com/2013/08/tcp-client-self-connect.html
         """
@@ -179,17 +200,21 @@ class TorpedoClient(tornado.tcpclient.TCPClient, TorpedoFramingMixin):
             # ignore connection issues
             pass
         if self._stream is not None:
-            if self.check_socket_valid(self._stream.socket):
+            if self._check_socket_valid(self._stream.socket):
                 yield self._handle_stream(self._address, self._stream)
             self._stream.close()
             self._stream = None
         if not self._closed:
             self.io_loop.call_later(self._reconnect_interval, self._connect)
 
+    def connected(self):
+        return self._stream is not None
+
     def send(self, msg):
-        return self._send_msg(self._stream, msg)
+        self._send_msg(self._stream, msg)
 
     def close(self):
         self._closed = True
         if self._stream is not None:
             self._stream.close()
+            self._stream = None
